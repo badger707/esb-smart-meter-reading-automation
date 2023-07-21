@@ -11,7 +11,7 @@ Unfortunatelly linked script is broken - ESB have chnaged some URL's since then 
 End result - code is fixed and runs just fine now, I am able to read all smart meter readings from my account in JSON format and push it further to my InfluxDB and Home Assistant for analysis/reporting.
 <br><br>
 # Requirements<br>
-* You need to create account with ESB here https://myaccount.esbnetworks.ie 
+* You need to create account with ESB here https://myaccount.esbnetworks.ie <br>
 * In your account, link your electricity meter MPRN
 <br><br>
 # Script setup<br>
