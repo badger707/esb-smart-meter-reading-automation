@@ -65,7 +65,7 @@ def load_esb_data(user, password, mpnr, start_date):
   data = s.get('https://myaccount.esbnetworks.ie/DataHub/DownloadHdf?mprn=' + mpnr + '&startDate=' + start_date.strftime('%Y-%m-%d'))
 
   print("[+] CSV file received !!!")
-  data_decoded = data.content.decode('utf-8').splitlines()
+  data_decoded = data.content.decode('utf-8')#.splitlines()
   print("[+] data decoded from Binary format")
   json_data = csv_response_to_json(data_decoded)
   return json_data
@@ -73,7 +73,7 @@ def load_esb_data(user, password, mpnr, start_date):
 def csv_response_to_json(csv_file):
   print("[+] creating JSON file from CSV ...")
   my_json = []
-  csv_reader = csv.DictReader(csv_file)
+  csv_reader = csv.DictReader(csv_file.split('\n'))
   for row in csv_reader:
     my_json.append(row)
   with open("json_data.json","w",encoding="utf-8") as jsonf:
