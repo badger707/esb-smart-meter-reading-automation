@@ -20,7 +20,7 @@ End result - code is fixed and runs just fine now, I am able to read all smart m
 <br><br>
 I hope this will be usefull, cheers!
 <br><br>
-UPADTES: <br>
-* 09-May-2024 -- there was some chnages on ESB side and this broke CSV parsing in script, fixed & tested, JSON output works as expected.
+UPDATES: <br>
+* 09-May-2024 -- there was some changes on ESB side and this broke CSV parsing in script, fixed & tested, JSON output works as expected.
 
 
