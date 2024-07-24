@@ -4,23 +4,26 @@
 <br><br>
 # How to read your Smart Meter data automatically?
 <br>
-Since I've got smart meter installed, I was looking for a way to automatically collect my meter data to track electricity usage (and solar export) with corresponding pricing as per current supplier rates.<br><br>
-While searching on internet I found this post https://www.boards.ie/discussion/2058292506/esb-smart-meter-data-script as potential candidate to start with.
-<br>
-Unfortunatelly linked script is broken - ESB have chnaged some URL's and file structure since then and I had to spend some time and tinker with code to make it working with new (as of writing it is 21-JUL-2023) URL structure.<br><br>
-End result - code is fixed and runs just fine now, I am able to read all smart meter readings from my account in JSON format and push it further to my InfluxDB and Home Assistant for analysis/reporting.
-<br><br>
+
+Simple Python code to download your smart electricy meter readings/data from ESB Networks user portal.
+
+Code consists of 2 main processes - (1) user login to web portal, (2) historic file download.
+
+(1) Login to web portal script part is based/taken from this code, [link](https://gist.github.com/schlan/f72d823dd5c1c1d19dfd784eb392dded).
+
+(2) Since ESB Networks updated User Portal and the proccess of historic file download, old aproach to download the file no longer works.<br>
+This Python script is adjusted to work with new download structure/proccess as of 24-Jul-2024
+
 # Requirements<br>
 * You need to create account with ESB here https://myaccount.esbnetworks.ie <br>
 * In your account, link your electricity meter MPRN
 <br><br>
 # Script setup<br>
-* In script - update MPRN, user and password at the bottom of the code
+* update MPRN, user and password in the script.
 
 <br><br>
-I hope this will be usefull, cheers!
-<br><br>
 UPDATES: <br>
+* 24-Jul-2024 -- Python script changes to accomodate ESB Networks user portal changes to download historic usage file. 
 * 09-May-2024 -- there was some changes on ESB side and this broke CSV parsing in script, fixed & tested, JSON output works as expected.
 
 
