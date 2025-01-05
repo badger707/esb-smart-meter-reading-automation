@@ -25,6 +25,13 @@ esb_password = "password"
 print(json_file)
 ```
 
+## Debug Mode for troubleshooting
+* Set debug_mode to True if you want to see extended info of what sript is doing and sending/receiving.
+````
+## Debug Mode print messages, set to True or False ##
+debug_mode=False
+````
+
 ## Known Limitations<br>
 * ESBN User Portal have enabled human verification process for logins since around Nov'24, this creates inconvenience/chalenges regardless of what you use -- standard web browser or script like this.
 * Server side limit: it does allow you to make only 2 clean logins per one IP per 24 hours without triggering human verification or captcha traps.
