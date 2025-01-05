@@ -32,6 +32,15 @@ print(json_file)
 debug_mode=False
 ````
 
+## Error Messages
+* When things goes wrong and User Portal starts serving human verification pages, script will stop with one or another error message based on received response content analysis:
+````
+ [Script Message] Unable to reach login page -- too many retries (max=2 in 24h) or prior sessions was not closed properly. Please try again after midnight.
+````
+````
+ [FAILED] Unable to get full set of required cookies -- too many retries (captcha?) or prior sessions was not closed properly. Please wait 6 hours for server to timeout and try again.
+````
+
 ## Known Limitations<br>
 * ESBN User Portal have enabled human verification process for logins since around Nov'24, this creates inconvenience/chalenges regardless of what you use -- standard web browser or script like this.
 * Server side limit: it does allow you to make only 2 clean logins per one IP per 24 hours without triggering human verification or captcha traps.
