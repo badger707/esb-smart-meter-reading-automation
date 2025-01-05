@@ -153,30 +153,43 @@ if (request_3_response_head_test == "<!DOCTYPE html PUBLIC"):
         print("[!] Page Title :: ", page_title.text)
 else: 
     session.close()
-    tester_soup_msg = tester_soup.find('h1')
-    print("tester h1 ::", tester_soup_msg.text)
-    no_js_msg = tester_soup.find('div', id='no_js')
-    print("[FAILED] :: ", no_js_msg.text)
-    no_cookie_msg = tester_soup.find('div', id='no_cookie')
-    print("[FAILED] :: ", no_cookie_msg.text)
-    print("[FAILED] Unable to reach login page -- too many requests within 24h (max=2). Please wait 6+ hours for server to timeout and try again?")
+    try:
+        tester_soup_msg = tester_soup.find('h1')
+        tester_soup_msg = tester_soup_msg.text
+        print("[FAILED] Page response ::", tester_soup_msg)
+    except: tester_soup_msg = ""
+    try:
+        no_js_msg = tester_soup.find('div', id='no_js')
+        no_js_msg = no_js_msg.text
+        print("[FAILED] Page response :: ", no_js_msg)
+    except: no_js_msg = ""
+    try:
+        no_cookie_msg = tester_soup.find('div', id='no_cookie')
+        no_cookie_msg = no_cookie_msg.text
+        print("[FAILED] Page response :: ", no_cookie_msg)
+    except: no_cookie_msg = ""
+    print("[Script Message] Unable to reach login page -- too many retries (max=2 in 24h) or prior sessions was not closed properly. Please try again after midnight.")
     raise SystemExit(0)
     
 if debug_mode:print("##### REQUEST - SOUP - state & client_info & code ######")
 soup = BeautifulSoup(request_3_response.content, 'html.parser')
-form = soup.find('form', {'id': 'auto'})
-login_url_ = form['action']
-state_ = form.find('input', {'name': 'state'})['value']
-client_info_ = form.find('input', {'name': 'client_info'})['value']
-code_ = form.find('input', {'name': 'code'})['value']
+try:
+    form = soup.find('form', {'id': 'auto'})
+    login_url_ = form['action']
+    state_ = form.find('input', {'name': 'state'})['value']
+    client_info_ = form.find('input', {'name': 'client_info'})['value']
+    code_ = form.find('input', {'name': 'code'})['value']
+    if debug_mode:
+        print("login url ::" ,login_url_)
+        print("state_ ::", state_)
+        print("client_info_ ::", client_info_)
+        print("code_ ::", code_)
+except:
+    print("[FAILED] Unable to get full set of required cookies from [request_3_response.content] -- too many retries (captcha?) or prior sessions was not closed properly. Please wait 6 hours for server to timeout and try again.")
+    session.close()
+    raise SystemExit(0)
 
-if debug_mode:
-    print("login url ::" ,login_url_)
-    print("state_ ::", state_)
-    print("client_info_ ::", client_info_)
-    print("code_ ::", code_)
-    print("##### REQUEST 4 -- POST [signin-oidc] ######")
-
+if debug_mode:print("##### REQUEST 4 -- POST [signin-oidc] ######")
 sleeping_delay= randint(2,5)
 if debug_mode:print('random sleep for',sleeping_delay,'seconds...')
 sleep(sleeping_delay)
