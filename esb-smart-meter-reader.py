@@ -1,427 +1,548 @@
 #!/usr/bin/env python3
+"""Download smart electricity meter readings from the ESB Networks customer portal.
 
-import requests
+Configuration is read from a ".env" file (see ".env.example"). Output goes to
+stdout — redirect with the shell to save to a file:
+
+    uv run esb-smart-meter-reader.py > readings.json
+    uv run esb-smart-meter-reader.py --format csv > readings.csv
+
+Set LOG_LEVEL=DEBUG in ".env" for a verbose per-request trace.
+"""
+
+import argparse
+import csv
+import io
+import json
+import logging
+import os
+import re
+from dataclasses import dataclass
 from random import randint
 from time import sleep
-from bs4 import BeautifulSoup   # pip install beautifulsoup4
-import re as re
-import json
-import csv
 
-## Debug Mode print messages, set to True or False ##
-debug_mode=False
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
-###### START OF SCRIPT ###### 
+logger = logging.getLogger("esb_meter_reader")
 
-if debug_mode:print("##### REQUEST 1 -- GET [https://myaccount.esbnetworks.ie/] ######")
-meter_mprn = "mprn_number"
-esb_user_name = "email@email.com"
-esb_password = "password"
-user_agent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:142.0) "
+    "Gecko/20100101 Firefox/142.0"
+)
+ALLOWED_OUTPUT_FORMATS = ("json", "csv")
 
-session = requests.Session()
-session.headers.update({
-    'User-Agent': user_agent,
-})    
+# B2C tenant / policy identifiers used throughout the login flow.
+B2C_TENANT = "esbntwkscustportalprdb2c01.onmicrosoft.com"
+B2C_POLICY = "B2C_1A_signup_signin"
+LOGIN_BASE_URL = f"https://login.esbnetworks.ie/{B2C_TENANT}/{B2C_POLICY}"
+PORTAL_BASE_URL = "https://myaccount.esbnetworks.ie"
 
-try:
-    request_1_response = session.get('https://myaccount.esbnetworks.ie/', allow_redirects=True, timeout= (10,5))     # timeout -- 10sec for connect and 5sec for response
-except requests.exceptions.Timeout:
-    print("[FAILED] The request timed out, server is not responding. Try again later.")
-    session.close()
-    raise SystemExit(0)
-except requests.exceptions.RequestException as e:
-    print("An error occurred:", e)
-    session.close()
-    raise SystemExit(0)
 
-result = re.findall(r"(?<=var SETTINGS = )\S*;", str(request_1_response.content))
-settings = json.loads(result[0][:-1])
-tester_soup = BeautifulSoup(request_1_response.content, 'html.parser')
-page_title = tester_soup.find("title")
-request_1_response_cookies = session.cookies.get_dict()
-x_csrf_token = settings['csrf']
-transId = settings['transId']
+class LoginError(RuntimeError):
+    """Raised when the portal blocks or rejects the login attempt."""
 
-if debug_mode:
-    print("[!] Request #1 Page Title :: ", page_title.text)
-    print("[!] Request #1 Status Code ::", request_1_response.status_code)
-    print("[!] Request #1 Response Headers ::", request_1_response.headers)
-    print("[!] Request #1 Cookies Captured ::", request_1_response_cookies)
-    print("x_csrf_token ::", x_csrf_token)
-    print("transId ::", transId)
 
-x_ms_cpim_sso = request_1_response_cookies.get('x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0')
-x_ms_cpim_csrf = request_1_response_cookies.get('x-ms-cpim-csrf')
-x_ms_cpim_trans = request_1_response_cookies.get('x-ms-cpim-trans')
+@dataclass
+class EsbConfig:
+    """Settings loaded from the environment / .env file."""
 
-if debug_mode:
-    print("##### creating x_ms_cpim cookies ######")
-    print("x_ms_cpim_sso ::", request_1_response_cookies.get('x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0'))
-    print("x_ms_cpim_csrf ::", request_1_response_cookies.get('x-ms-cpim-csrf'))
-    print("x_ms_cpim_trans ::", request_1_response_cookies.get('x-ms-cpim-trans'))
-    print("##### REQUEST 2 -- POST [SelfAsserted] ######")
+    username: str
+    password: str
+    mprn: str
+    search_type: str
+    user_agent: str
+    log_level: str
 
-sleeping_delay= randint(10,20)
-if debug_mode:print('random sleep for',sleeping_delay,'seconds...')
-sleep(sleeping_delay)
 
-request_2_response = session.post(
-    'https://login.esbnetworks.ie/esbntwkscustportalprdb2c01.onmicrosoft.com/B2C_1A_signup_signin/SelfAsserted?tx=' + transId + '&p=B2C_1A_signup_signin', 
-    data={
-      'signInName': esb_user_name, 
-      'password': esb_password, 
-      'request_type': 'RESPONSE'
-    },
-    headers={
-      'x-csrf-token': x_csrf_token,
-      'User-Agent': user_agent,
-      'Accept': 'application/json, text/javascript, */*; q=0.01',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Origin': 'https://login.esbnetworks.ie',
-      'Dnt': '1',
-      'Sec-Gpc': '1',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-origin',
-      'Priority': 'u=0',
-      'Te': 'trailers',
-    },
-    cookies={
-        'x-ms-cpim-csrf':request_1_response_cookies.get('x-ms-cpim-csrf'),
-    #    'x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0':request_1_response_cookies.get('x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0'),
-        'x-ms-cpim-trans':request_1_response_cookies.get('x-ms-cpim-trans'),
-    },
-    allow_redirects=False)
+def load_config() -> EsbConfig:
+    """Load and validate configuration from environment variables."""
+    load_dotenv()
 
-request_2_response_cookies = session.cookies.get_dict()
-if debug_mode:
-    print("[!] Request #2 Status Code ::", request_2_response.status_code)
-    print("[!] Request #2 Response Headers ::", request_2_response.headers)
-    print("[!] Request #2 Cookies Captured :: ", request_2_response_cookies)
-    print("[!] Request #2 text :: ", request_2_response.text)
-    print("##### REQUEST 3 -- GET [API CombinedSigninAndSignup] ######")
+    username = os.environ.get("ESB_USERNAME", "").strip()
+    password = os.environ.get("ESB_PASSWORD", "").strip()
+    mprn = os.environ.get("ESB_MPRN", "").strip()
+    search_type = os.environ.get("ESB_SEARCH_TYPE", "intervalkwh").strip()
+    user_agent = os.environ.get("ESB_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+    log_level = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 
-request_3_response = session.get(
-    'https://login.esbnetworks.ie/esbntwkscustportalprdb2c01.onmicrosoft.com/B2C_1A_signup_signin/api/CombinedSigninAndSignup/confirmed',
-    params={
-      'rememberMe': False,
-      'csrf_token': x_csrf_token,
-      'tx': transId,
-      'p': 'B2C_1A_signup_signin',
-    },
-    headers={
-      "User-Agent": user_agent,
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-      "Accept-Encoding": "gzip, deflate, br",
-      "Dnt": "1",
-      "Sec-Gpc": "1",
-      "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Mode": "navigate",
-      "Sec-Fetch-Site": "same-origin",
-      "Priority": "u=0, i",
-      "Pragma": "no-cache",
-      "Cache-Control": "no-cache",
-      "Te": "trailers",
-    },
-    cookies={
-        "x-ms-cpim-csrf":request_2_response_cookies.get("x-ms-cpim-csrf"),
-    #    "x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0": request_2_response_cookies.get("x-ms-cpim-sso:esbntwkscustportalprdb2c01.onmicrosoft.com_0"),
-        'x-ms-cpim-trans':request_2_response_cookies.get("x-ms-cpim-trans"),
-    },
-  )
+    missing = [
+        name
+        for name, value in (
+            ("ESB_USERNAME", username),
+            ("ESB_PASSWORD", password),
+            ("ESB_MPRN", mprn),
+            ("ESB_SEARCH_TYPE", search_type),
+        )
+        if not value
+    ]
+    if missing:
+        raise SystemExit(
+            "Missing required config: "
+            + ", ".join(missing)
+            + ". Copy .env.example to .env and fill in your values."
+        )
 
-tester_soup = BeautifulSoup(request_3_response.content, 'html.parser')
-page_title = tester_soup.find("title")
-request_3_response_cookies = session.cookies.get_dict()
-
-if debug_mode:
-    print("[!] Page Title :: ", page_title.text)      # will print "Loading..." if failed
-    print("[!] Request #3 Status Code ::", request_3_response.status_code)
-    print("[!] Request #3 Response Headers ::", request_3_response.headers)
-    print("[!] Request #3 Cookies Captured :: ", request_3_response_cookies)
-    print("[!] Request #3 Content :: ", request_3_response.content)
-    print("##### TEST IF SUCCESS ######")
-
-request_3_response_head_test = request_3_response.text[0:21]
-if (request_3_response_head_test == "<!DOCTYPE html PUBLIC"):
-    page_title = tester_soup.find("title")
-    if debug_mode:
-        print("[PASS] SUCCESS -- ALL OK [PASS]")
-        print("[!] Page Title :: ", page_title.text)
-else: 
-    session.close()
-    try:
-        tester_soup_msg = tester_soup.find('h1')
-        tester_soup_msg = tester_soup_msg.text
-        print("[FAILED] Page response ::", tester_soup_msg)
-    except: tester_soup_msg = ""
-    try:
-        no_js_msg = tester_soup.find('div', id='no_js')
-        no_js_msg = no_js_msg.text
-        print("[FAILED] Page response :: ", no_js_msg)
-    except: no_js_msg = ""
-    try:
-        no_cookie_msg = tester_soup.find('div', id='no_cookie')
-        no_cookie_msg = no_cookie_msg.text
-        print("[FAILED] Page response :: ", no_cookie_msg)
-    except: no_cookie_msg = ""
-    print("[Script Message] Unable to reach login page -- too many retries (max=2 in 24h) or prior sessions was not closed properly. Please try again after midnight.")
-    raise SystemExit(0)
-    
-if debug_mode:print("##### REQUEST - SOUP - state & client_info & code ######")
-soup = BeautifulSoup(request_3_response.content, 'html.parser')
-try:
-    form = soup.find('form', {'id': 'auto'})
-    login_url_ = form['action']
-    state_ = form.find('input', {'name': 'state'})['value']
-    client_info_ = form.find('input', {'name': 'client_info'})['value']
-    code_ = form.find('input', {'name': 'code'})['value']
-    if debug_mode:
-        print("login url ::" ,login_url_)
-        print("state_ ::", state_)
-        print("client_info_ ::", client_info_)
-        print("code_ ::", code_)
-except:
-    print("[FAILED] Unable to get full set of required cookies from [request_3_response.content] -- too many retries (captcha?) or prior sessions was not closed properly. Please wait 6 hours for server to timeout and try again.")
-    session.close()
-    raise SystemExit(0)
-
-if debug_mode:print("##### REQUEST 4 -- POST [signin-oidc] ######")
-sleeping_delay= randint(2,5)
-if debug_mode:print('random sleep for',sleeping_delay,'seconds...')
-sleep(sleeping_delay)
-
-request_4_headers = {
-    "User-Agent": user_agent,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Origin": "https://login.esbnetworks.ie",
-    "Dnt": "1",
-    "Sec-Gpc": "1",
-    "Referer": "https://login.esbnetworks.ie/",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-site",
-    "Priority": "u=0, i",
-    "Pragma": "no-cache",
-    "Cache-Control": "no-cache",
-    "Te": "trailers",
-}
-
-request_4_response = session.post(
-        login_url_,
-        allow_redirects=False,
-        data={
-          'state': state_,
-          'client_info': client_info_,
-          'code': code_,
-        },
-        headers=request_4_headers,
+    return EsbConfig(
+        username=username,
+        password=password,
+        mprn=mprn,
+        search_type=search_type,
+        user_agent=user_agent,
+        log_level=log_level,
     )
 
-request_4_response_cookies = session.cookies.get_dict()
-if debug_mode:
-    print("[!] Request #4 Status Code ::", request_4_response.status_code)  # expect 302
-    print("[!] Request #4 Response Headers ::", request_4_response.headers)
-    print("[!] Request #4 Cookies Captured ::", request_4_response_cookies)
-    print("[!] Request #4 Content ::", request_4_response.content)
-    print("##### REQUEST 5 -- GET [https://myaccount.esbnetworks.ie] ######")
 
-request_5_url = "https://myaccount.esbnetworks.ie"
-request_5_headers = {
-    "User-Agent": user_agent,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://login.esbnetworks.ie/",
-    "Dnt": "1",
-    "Sec-Gpc": "1",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-site",
-    "Priority": "u=0, i",
-    "Pragma": "no-cache",
-    "Cache-Control": "no-cache",
-    "Te": "trailers",
-}
-request_5_cookies = {
-    "ARRAffinity":request_4_response_cookies.get("ARRAffinity"),
-    "ARRAffinitySameSite":request_4_response_cookies.get("ARRAffinitySameSite"),
-}
+def configure_logging(log_level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
-request_5_response = session.get(request_5_url,headers=request_5_headers,cookies=request_5_cookies)
-request_5_response_cookies = session.cookies.get_dict()
 
-if debug_mode:
-    print("[!] Request #5 Status Code ::", request_5_response.status_code)
-    print("[!] Request #5 Response Headers ::", request_5_response.headers)
-    print("[!] Request #5 Cookies Captured ::", request_5_response_cookies)
-    print("[!] Request #5 Content ::", request_5_response.content)
-    print("##### Welcome page block #####")
-    
-user_welcome_soup = BeautifulSoup(request_5_response.text,'html.parser')
-welcome_page_title_ = user_welcome_soup.find('title')
-if debug_mode:print("[!] Page Title ::", welcome_page_title_.text)                   # it should print "Customer Portal"
-welcome_page_title_ = user_welcome_soup.find('h1', class_='esb-title-h1')
-if debug_mode:print("[!] Confirmed User Login ::", welcome_page_title_.text)    # It should print "Welcome, Name Surname"
-asp_net_core_cookie = request_5_response_cookies.get(".AspNetCore.Cookies")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download ESB smart meter readings.")
+    parser.add_argument(
+        "--format", choices=ALLOWED_OUTPUT_FORMATS, default="json",
+        help="Output format: json (default) or csv",
+    )
+    return parser.parse_args()
 
-if debug_mode:print("##### REQUEST 6 -- GET [Api/HistoricConsumption] ######")
-sleeping_delay= randint(3,8)
-if debug_mode:print('random sleep for',sleeping_delay,'seconds...')
-sleep(sleeping_delay)
-request_6_url = "https://myaccount.esbnetworks.ie/Api/HistoricConsumption"
-request_6_cookies = {
-    "ARRAffinity":request_4_response_cookies.get("ARRAffinity"),
-    "ARRAffinitySameSite":request_4_response_cookies.get("ARRAffinitySameSite"),
-    ".AspNetCore.Cookies":asp_net_core_cookie,
-}
-request_6_headers = {
-    "User-Agent": user_agent,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Dnt": "1",
-    "Sec-Gpc": "1",
-    "Referer": "https://myaccount.esbnetworks.ie/",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-User": "?1",
-    "Priority": "u=0, i",
-    "Te": "trailers",
-}
 
-request_6_response = session.get(request_6_url, headers=request_6_headers,cookies=request_6_cookies)
-request_6_response_cookies = session.cookies.get_dict()
+def random_delay(min_seconds: int, max_seconds: int) -> None:
+    """Sleep a random number of seconds to look less robotic to the server."""
+    delay = randint(min_seconds, max_seconds)
+    logger.debug("Random sleep for %s seconds...", delay)
+    sleep(delay)
 
-if debug_mode:
-    print("[!] Request #6 Status Code ::", request_5_response.status_code)
-    print("[!] Request #6 Response Headers ::", request_5_response.headers)
-    print("[!] Request #6 Cookies Captured ::", request_6_response_cookies)
-    print("##### My Energy Consumption - Customer Portal #####")
-consumption_soup = BeautifulSoup(request_6_response.text,'html.parser')
-consumption_page_title_ = consumption_soup.find('title')
-welcome_page_title_ = consumption_soup.find('h1', class_='esb-title-h1')
-if debug_mode:
-    print("[!] Page Title ::", consumption_page_title_.text)    # it should print "My Energy Consumption - Customer Portal"
-    print("[!] 'esb-title-h1' ::", welcome_page_title_.text)    # It should print "My Energy Consumption"
-    print("##### REQUEST 7 -- GET [file download token] ######")
-sleeping_delay= randint(2,5)
-if debug_mode:print('random sleep for',sleeping_delay,'seconds...')
-sleep(sleeping_delay)
 
-request_7_url = "https://myaccount.esbnetworks.ie/af/t"
-request_7_headers = {
-    "User-Agent": user_agent,
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "X-Returnurl": "https://myaccount.esbnetworks.ie/Api/HistoricConsumption",
-    "Dnt": "1",
-    "Sec-Gpc": "1",
-    "Referer": "https://myaccount.esbnetworks.ie/Api/HistoricConsumption",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "Priority": "u=0",
-    "Te": "trailers",
-}
-request_7_cookies = {
-    "ARRAffinity":request_4_response_cookies.get("ARRAffinity"),
-    "ARRAffinitySameSite":request_4_response_cookies.get("ARRAffinitySameSite"),
-}
-request_7_response = session.get(request_7_url,headers=request_7_headers,cookies=request_7_cookies)
-request_7_response_cookies = session.cookies.get_dict()
-file_download_token = json.loads(request_7_response.text)["token"]
-if debug_mode:
-    print("[!] Request #7 Status Code ::", request_7_response.status_code)
-    print("[!] Request #7 Response Headers ::", request_7_response.headers)
-    print("[!] Request #7 Cookies Captured ::", request_7_response_cookies)
-    print("[!] Request #7 Content ::", request_7_response.content)
-    print("File download token :: ",file_download_token)
-    print("##### REQUEST 8 -- GET [/DataHub/DownloadHdfPeriodic] ######")
-request_8_url = "https://myaccount.esbnetworks.ie/DataHub/DownloadHdfPeriodic"
-request_8_headers = {
-    "User-Agent": user_agent,
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://myaccount.esbnetworks.ie/Api/HistoricConsumption",
-    "Content-Type": "application/json",
-    "X-Returnurl": "https://myaccount.esbnetworks.ie/Api/HistoricConsumption",
-    "X-Xsrf-Token": file_download_token,
-    "Origin": "https://myaccount.esbnetworks.ie",
-    "Dnt": "1",
-    "Sec-Gpc": "1",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "Priority": "u=4",
-    "Cache-Control": "max-age=0",
-    "Te": "trailers",
-}
-payload_data = {
-    "mprn": meter_mprn,
-    "searchType": "intervalkw"  ### <<<< !!! THIS IS WHERE YOU SELECT WHICH FILE YOU WANT !!!
-}
-request_8_response = session.post(request_8_url, headers=request_8_headers, json=payload_data)
-if debug_mode:
-    print("[!] Request #8 Status Code ::", request_8_response.status_code)
-    print("[!] Request #8 Response Headers ::", request_8_response.headers)
-    print("[END] HTTP Requests completed. Closing session.")
-session.close()
+def build_session(user_agent: str) -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"User-Agent": user_agent})
+    return session
 
-if debug_mode:print("#### Getting file attributes ####")
-file_size_ = request_8_response.headers.get("Content-Length")
-file_name_ = request_8_response.headers.get("Content-Disposition")
-file_name_ = file_name_.split(";")
-file_name_ = file_name_[1].split("=")
-file_name_ = file_name_[1]
-if debug_mode:
-    print("[!] File size, bytes ::",file_size_)
-    print("[!] Disposition ::",file_name_)     # it should print [attachment; filename=HDF_kW_mprn_date.csv; filename*=UTF-8''HDF_kW_mprn_date.csv]
-    print("[!] File Name ::",file_name_)
-    print("##### Checking/converting received CSV file/object #####")
-if (isinstance(request_8_response.content, bytes)):
-    if debug_mode:print("[!] Object class is 'bytes', decoding to 'utf-8' and continuing...")
-    csv_file = request_8_response.content.decode("utf-8")
-elif(isinstance(request_8_response.content, str)):
-    if debug_mode:print("[!] Object class is 'string', continuing...")
-    csv_file = request_8_response.content
-else:
-    print("[FAIL] received object is neither 'bytes' nor 'string, stopping here, please check/validate [request_8_response.content]")
-    raise SystemExit(0)
-if debug_mode:
-    print("[!] CSV data sample ::")
-    print(csv_file[0:500])
-try:
-    if debug_mode:print("[!] Converting CSV to JSON...")
-    if(csv_file[0:4] == "MPRN"):
-        my_json = []
-        csv_reader = csv.DictReader(csv_file.split('\n'))
-        for row in csv_reader:
-            my_json.append(row)
-        json_file = json.dumps(my_json, indent=2)
-        if debug_mode:print("[COMPLETED] JSON file created. Use [json_file] .")
+
+def fetch_login_settings(session: requests.Session) -> tuple[str, str]:
+    """Request #1 -- GET the portal landing page and extract the B2C SETTINGS blob.
+
+    Returns (csrf_token, transaction_id).
+    """
+    logger.debug("##### REQUEST 1 -- GET [%s/] ######", PORTAL_BASE_URL)
+    try:
+        # timeout -- 10s to connect, 5s to first byte
+        response = session.get(
+            f"{PORTAL_BASE_URL}/", allow_redirects=True, timeout=(10, 5)
+        )
+    except requests.exceptions.Timeout:
+        raise LoginError(
+            "The request timed out, server is not responding. Try again later."
+        )
+    except requests.exceptions.RequestException as exc:
+        raise LoginError(f"An error occurred: {exc}")
+
+    settings_match = re.findall(r"(?<=var SETTINGS = )\S*;", str(response.content))
+    settings = json.loads(settings_match[0][:-1])
+    csrf_token = settings["csrf"]
+    transaction_id = settings["transId"]
+
+    soup = BeautifulSoup(response.content, "html.parser")
+    logger.debug("[!] Request #1 Page Title :: %s", soup.find("title").text)
+    logger.debug("[!] Request #1 Status Code :: %s", response.status_code)
+    logger.debug("[!] Request #1 Cookies :: %s", session.cookies.get_dict())
+    logger.debug("csrf_token :: %s", csrf_token)
+    logger.debug("transaction_id :: %s", transaction_id)
+
+    return csrf_token, transaction_id
+
+
+def submit_credentials(
+    session: requests.Session,
+    config: EsbConfig,
+    csrf_token: str,
+    transaction_id: str,
+) -> None:
+    """Request #2 -- POST credentials to the SelfAsserted endpoint."""
+    logger.debug("##### REQUEST 2 -- POST [SelfAsserted] ######")
+    cookies = session.cookies.get_dict()
+    response = session.post(
+        f"{LOGIN_BASE_URL}/SelfAsserted?tx={transaction_id}&p={B2C_POLICY}",
+        data={
+            "signInName": config.username,
+            "password": config.password,
+            "request_type": "RESPONSE",
+        },
+        headers={
+            "x-csrf-token": csrf_token,
+            "User-Agent": config.user_agent,
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://login.esbnetworks.ie",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Priority": "u=0",
+            "Te": "trailers",
+        },
+        cookies={
+            "x-ms-cpim-csrf": cookies.get("x-ms-cpim-csrf"),
+            "x-ms-cpim-trans": cookies.get("x-ms-cpim-trans"),
+        },
+        allow_redirects=False,
+    )
+    logger.debug("[!] Request #2 Status Code :: %s", response.status_code)
+    logger.debug("[!] Request #2 text :: %s", response.text)
+
+
+@dataclass
+class SigninForm:
+    """Hidden form fields needed to complete the OIDC sign-in (request #4)."""
+
+    login_url: str
+    state: str
+    client_info: str
+    code: str
+
+
+def confirm_signin(
+    session: requests.Session, csrf_token: str, transaction_id: str
+) -> SigninForm:
+    """Request #3 -- confirm sign-in and extract the auto-post form fields.
+
+    Also detects the portal's "too many retries" / human-verification responses.
+    """
+    logger.debug("##### REQUEST 3 -- GET [API CombinedSigninAndSignup] ######")
+    cookies = session.cookies.get_dict()
+    response = session.get(
+        f"{LOGIN_BASE_URL}/api/CombinedSigninAndSignup/confirmed",
+        params={
+            "rememberMe": False,
+            "csrf_token": csrf_token,
+            "tx": transaction_id,
+            "p": B2C_POLICY,
+        },
+        headers={
+            "User-Agent": session.headers["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Priority": "u=0, i",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+            "Te": "trailers",
+        },
+        cookies={
+            "x-ms-cpim-csrf": cookies.get("x-ms-cpim-csrf"),
+            "x-ms-cpim-trans": cookies.get("x-ms-cpim-trans"),
+        },
+    )
+
+    soup = BeautifulSoup(response.content, "html.parser")
+    logger.debug("[!] Request #3 Status Code :: %s", response.status_code)
+    logger.debug("[!] Request #3 Page Title :: %s", soup.find("title").text)
+
+    # A genuine success page starts with a full HTML doctype; anything else is a
+    # verification / blocked response.
+    if not response.text.startswith("<!DOCTYPE html PUBLIC"):
+        for selector in (("h1", {}), ("div", {"id": "no_js"}), ("div", {"id": "no_cookie"})):
+            element = soup.find(selector[0], selector[1])
+            if element:
+                logger.error("[FAILED] Page response :: %s", element.text)
+        raise LoginError(
+            "Unable to reach login page -- too many retries (max=2 in 24h) or a prior "
+            "session was not closed properly. Please try again after midnight."
+        )
+
+    logger.debug("[PASS] SUCCESS -- ALL OK")
+
+    logger.debug("##### Extracting state & client_info & code ######")
+    form = soup.find("form", {"id": "auto"})
+    try:
+        signin_form = SigninForm(
+            login_url=form["action"],
+            state=form.find("input", {"name": "state"})["value"],
+            client_info=form.find("input", {"name": "client_info"})["value"],
+            code=form.find("input", {"name": "code"})["value"],
+        )
+    except (TypeError, KeyError):
+        raise LoginError(
+            "Unable to get the required form fields -- too many retries (captcha?) or a "
+            "prior session was not closed properly. Please wait 6 hours for the server "
+            "to time out and try again."
+        )
+
+    logger.debug("login_url :: %s", signin_form.login_url)
+    logger.debug("state :: %s", signin_form.state)
+    logger.debug("client_info :: %s", signin_form.client_info)
+    logger.debug("code :: %s", signin_form.code)
+    return signin_form
+
+
+def complete_oidc(
+    session: requests.Session, user_agent: str, signin_form: SigninForm
+) -> None:
+    """Request #4 -- POST the form back to the signin-oidc endpoint."""
+    logger.debug("##### REQUEST 4 -- POST [signin-oidc] ######")
+    random_delay(2, 5)
+    response = session.post(
+        signin_form.login_url,
+        allow_redirects=False,
+        data={
+            "state": signin_form.state,
+            "client_info": signin_form.client_info,
+            "code": signin_form.code,
+        },
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://login.esbnetworks.ie",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Referer": "https://login.esbnetworks.ie/",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-site",
+            "Priority": "u=0, i",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+            "Te": "trailers",
+        },
+    )
+    logger.debug("[!] Request #4 Status Code :: %s", response.status_code)  # expect 302
+
+
+def load_account_home(session: requests.Session, user_agent: str) -> None:
+    """Request #5 -- GET the portal home page to confirm we are logged in."""
+    logger.debug("##### REQUEST 5 -- GET [%s] ######", PORTAL_BASE_URL)
+    cookies = session.cookies.get_dict()
+    response = session.get(
+        PORTAL_BASE_URL,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://login.esbnetworks.ie/",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-site",
+            "Priority": "u=0, i",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+            "Te": "trailers",
+        },
+        cookies={
+            "ARRAffinity": cookies.get("ARRAffinity"),
+            "ARRAffinitySameSite": cookies.get("ARRAffinitySameSite"),
+        },
+    )
+    logger.debug("[!] Request #5 Status Code :: %s", response.status_code)
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    logger.debug("[!] Page Title :: %s", soup.find("title").text)  # "Customer Portal"
+    welcome = soup.find("h1", class_="esb-title-h1")
+    if welcome:
+        logger.debug("[!] Confirmed User Login :: %s", welcome.text)  # "Welcome, ..."
+
+
+def open_consumption_page(session: requests.Session, user_agent: str) -> None:
+    """Request #6 -- GET the Historic Consumption page (sets up the download)."""
+    logger.debug("##### REQUEST 6 -- GET [Api/HistoricConsumption] ######")
+    random_delay(3, 8)
+    cookies = session.cookies.get_dict()
+    response = session.get(
+        f"{PORTAL_BASE_URL}/Api/HistoricConsumption",
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Referer": f"{PORTAL_BASE_URL}/",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Priority": "u=0, i",
+            "Te": "trailers",
+        },
+        cookies={
+            "ARRAffinity": cookies.get("ARRAffinity"),
+            "ARRAffinitySameSite": cookies.get("ARRAffinitySameSite"),
+            ".AspNetCore.Cookies": cookies.get(".AspNetCore.Cookies"),
+        },
+    )
+    logger.debug("[!] Request #6 Status Code :: %s", response.status_code)
+    soup = BeautifulSoup(response.text, "html.parser")
+    logger.debug("[!] Page Title :: %s", soup.find("title").text)
+
+
+def fetch_download_token(session: requests.Session, user_agent: str) -> str:
+    """Request #7 -- GET the anti-forgery token required for the file download."""
+    logger.debug("##### REQUEST 7 -- GET [file download token] ######")
+    random_delay(2, 5)
+    cookies = session.cookies.get_dict()
+    response = session.get(
+        f"{PORTAL_BASE_URL}/af/t",
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "X-Returnurl": f"{PORTAL_BASE_URL}/Api/HistoricConsumption",
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Referer": f"{PORTAL_BASE_URL}/Api/HistoricConsumption",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Priority": "u=0",
+            "Te": "trailers",
+        },
+        cookies={
+            "ARRAffinity": cookies.get("ARRAffinity"),
+            "ARRAffinitySameSite": cookies.get("ARRAffinitySameSite"),
+        },
+    )
+    download_token = json.loads(response.text)["token"]
+    logger.debug("[!] Request #7 Status Code :: %s", response.status_code)
+    logger.debug("Download token :: %s", download_token)
+    return download_token
+
+
+def download_readings(
+    session: requests.Session,
+    user_agent: str,
+    mprn: str,
+    search_type: str,
+    download_token: str,
+) -> requests.Response:
+    """Request #8 -- POST to download the historic data file for the meter."""
+    logger.debug("##### REQUEST 8 -- POST [/DataHub/DownloadHdfPeriodic] ######")
+    response = session.post(
+        f"{PORTAL_BASE_URL}/DataHub/DownloadHdfPeriodic",
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": f"{PORTAL_BASE_URL}/Api/HistoricConsumption",
+            "Content-Type": "application/json",
+            "X-Returnurl": f"{PORTAL_BASE_URL}/Api/HistoricConsumption",
+            "X-Xsrf-Token": download_token,
+            "Origin": PORTAL_BASE_URL,
+            "Dnt": "1",
+            "Sec-Gpc": "1",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Priority": "u=4",
+            "Cache-Control": "max-age=0",
+            "Te": "trailers",
+        },
+        json={
+            "mprn": mprn,
+            "searchType": search_type,
+        },
+    )
+    logger.debug("[!] Request #8 Status Code :: %s", response.status_code)
+    return response
+
+
+def parse_filename(response: requests.Response) -> str | None:
+    """Extract the filename from the Content-Disposition header, if present."""
+    disposition = response.headers.get("Content-Disposition")
+    if not disposition:
+        return None
+    # e.g. "attachment; filename=HDF_kW_mprn_date.csv; filename*=UTF-8''..."
+    parts = disposition.split(";")
+    if len(parts) < 2 or "=" not in parts[1]:
+        return None
+    return parts[1].split("=")[1].strip()
+
+
+def decode_payload(response: requests.Response) -> str:
+    """Return the downloaded CSV payload as text."""
+    content = response.content
+    if isinstance(content, bytes):
+        logger.debug("[!] Payload is bytes, decoding to utf-8...")
+        return content.decode("utf-8")
+    if isinstance(content, str):
+        return content
+    raise SystemExit(
+        "[FAIL] Downloaded object is neither bytes nor str; "
+        "please check the response from request #8."
+    )
+
+
+def csv_to_json(csv_text: str) -> str:
+    """Convert the ESB CSV payload to a pretty-printed JSON string."""
+    if not csv_text.startswith("MPRN"):
+        raise SystemExit(
+            "[FAIL] Unexpected CSV header; cannot convert to JSON "
+            "(expected the file to start with 'MPRN')."
+        )
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    return json.dumps(rows, indent=2)
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_config()
+    configure_logging(config.log_level)
+
+    session = build_session(config.user_agent)
+    try:
+        csrf_token, transaction_id = fetch_login_settings(session)
+        random_delay(10, 20)
+        submit_credentials(session, config, csrf_token, transaction_id)
+        signin_form = confirm_signin(session, csrf_token, transaction_id)
+        complete_oidc(session, config.user_agent, signin_form)
+        load_account_home(session, config.user_agent)
+        open_consumption_page(session, config.user_agent)
+        download_token = fetch_download_token(session, config.user_agent)
+        response = download_readings(
+            session,
+            config.user_agent,
+            config.mprn,
+            config.search_type,
+            download_token,
+        )
+    except LoginError as exc:
+        logger.error("[FAILED] %s", exc)
+        raise SystemExit(1)
+    finally:
+        logger.debug("[END] Closing session.")
+        session.close()
+
+    filename = parse_filename(response)
+    logger.info("Downloaded file :: %s (%s bytes)", filename, response.headers.get("Content-Length"))
+
+    readings_csv = decode_payload(response)
+    if args.format == "csv":
+        print(readings_csv)
     else:
-        print("[FAIL] Something is wrong with CSV file header structure, cant convert to JSON. Expected [csv_file[0:4] == 'MPRN'] but failed.")
-except:
-    print("[FAIL] Something is wrong with CSV file structure, cant convert to JSON, check/validate if [csv.DictReader(csv_file.split('\n'))] works.")
-    raise SystemExit(0)
+        print(csv_to_json(readings_csv))
 
-###### END OF SCRIPT ###### 
 
-###/ Select file format of your choice /###
-#print(csv_file)
-print(json_file)
+if __name__ == "__main__":
+    main()

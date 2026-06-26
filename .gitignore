@@ -1,0 +1,13 @@
+# Secrets / local config
+.env
+
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Downloaded meter data
+*.csv

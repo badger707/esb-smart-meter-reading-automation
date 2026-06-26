@@ -1,0 +1,10 @@
+[project]
+name = "esb-smart-meter-reading-automation"
+version = "0.1.0"
+description = "Download smart electricity meter readings from the ESB Networks customer portal."
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+]
